@@ -134,26 +134,26 @@ if __name__ == "__main__":
         ]
 
 
-        # Scale the envs using padding to make the jax jit functions work
-        scaled_envs = []
-        scale_mask = []
-        # max_samples = envs[0]['images'].shape[0]
-        for env in envs:
-            num_samples = env['images'].shape[0]
-            scale_mask.append(num_samples)
-        max_samples = max(scale_mask)
-        for i, env in enumerate(envs):
-            sample_difference = max_samples - scale_mask[i]
-            if sample_difference == 0:
-                continue
-            pad_img_data = jnp.zeros(jax.tree_flatten([sample_difference, env['images'].shape[1:]])[0])
-            pad_label_data = jnp.zeros(jax.tree_flatten([sample_difference, env['labels'].shape[1:]])[0])
-            scaled_envs.append({
-                'images': jnp.vstack((env['images'], pad_img_data)),
-                'labels': jnp.vstack((env['labels'], pad_label_data))
-            })
-
-        envs = scaled_envs
+        # # Scale the envs using padding to make the jax jit functions work
+        # scaled_envs = []
+        # scale_mask = []
+        # # max_samples = envs[0]['images'].shape[0]
+        # for env in envs:
+        #     num_samples = env['images'].shape[0]
+        #     scale_mask.append(num_samples)
+        # max_samples = max(scale_mask)
+        # for i, env in enumerate(envs):
+        #     sample_difference = max_samples - scale_mask[i]
+        #     if sample_difference == 0:
+        #         continue
+        #     pad_img_data = jnp.zeros(jax.tree_flatten([sample_difference, env['images'].shape[1:]])[0])
+        #     pad_label_data = jnp.zeros(jax.tree_flatten([sample_difference, env['labels'].shape[1:]])[0])
+        #     scaled_envs.append({
+        #         'images': jnp.vstack((env['images'], pad_img_data)),
+        #         'labels': jnp.vstack((env['labels'], pad_label_data))
+        #     })
+        #
+        # envs = scaled_envs
 
         # Initialize the neural network parameters
         key, split = jax.random.split(key)
@@ -164,7 +164,7 @@ if __name__ == "__main__":
 
         pretty_print('step', 'train nll', 'train acc', 'train penalty', 'test acc')
 
-        def loss_fn(params, envs, validation_env):
+        def loss_fn(params, envs):
             def aggregator(c, x):
                 env_images = jnp.array(c['env_images'])[x]
                 env_labels = jnp.array(c['env_labels'])[x]
@@ -186,8 +186,7 @@ if __name__ == "__main__":
                 'acc': jnp.zeros(3),
                 'penalty': jnp.zeros(3),
                 'env_images': [x['images'] for x in envs],
-                'env_labels': [x['labels'] for x in envs],
-                'env_scale': jnp.array(scale_mask)
+                'env_labels': [x['labels'] for x in envs]
             }, jnp.arange(3))
 
             train_nll = jnp.mean(losses['nll'])
@@ -213,14 +212,15 @@ if __name__ == "__main__":
         #     return loss
         for step in range(steps):
             loss_grad_fn = jax.grad(loss_fn, has_aux=True)
-            grads, (values, train_nll, train_acc, train_penalty) = loss_grad_fn(params, envs[:2], envs[-1])
+            grads, (values, train_nll, train_acc, train_penalty) = loss_grad_fn(params, envs[:-1])
 
             updates, opt_state = optim.update(grads, opt_state, params)
             params = optax.apply_updates(params, updates)
 
             if step % 100 == 0:
-                # _, values, train_nll, train_acc, train_penalty = loss_fn(params, envs)
-                test_acc = values['acc'][2]
+                _, values, _, test_acc, _ = loss_fn(params, envs[-1:])
+
+                test_acc = values['acc'][0]
                 pretty_print(
                     np.int32(step),
                     train_nll,
