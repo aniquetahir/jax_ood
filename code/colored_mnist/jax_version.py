@@ -164,7 +164,7 @@ if __name__ == "__main__":
 
         pretty_print('step', 'train nll', 'train acc', 'train penalty', 'test acc')
 
-        def loss_fn(params, envs):
+        def loss_fn(params, envs, validation_env):
             def aggregator(c, x):
                 env_images = jnp.array(c['env_images'])[x]
                 env_labels = jnp.array(c['env_labels'])[x]
@@ -208,19 +208,15 @@ if __name__ == "__main__":
 
             return (loss, (losses, train_nll, train_acc, train_penalty))
 
-        def loss_fn_for_grad(params, envs):
-            loss, _, _, _, _ = loss_fn(params, envs)
-            return loss
-
-
+        # def loss_fn_for_grad(params, envs):
+        #     loss, _, _, _, _ = loss_fn(params, envs[:2], envs[-1])
+        #     return loss
         for step in range(steps):
             loss_grad_fn = jax.grad(loss_fn, has_aux=True)
-            grads, (values, train_nll, train_acc, train_penalty) = loss_grad_fn(params, envs)
-
+            grads, (values, train_nll, train_acc, train_penalty) = loss_grad_fn(params, envs[:2], envs[-1])
 
             updates, opt_state = optim.update(grads, opt_state, params)
             params = optax.apply_updates(params, updates)
-
 
             if step % 100 == 0:
                 # _, values, train_nll, train_acc, train_penalty = loss_fn(params, envs)
