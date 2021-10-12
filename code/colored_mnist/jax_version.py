@@ -30,11 +30,13 @@ class MLP(hk.Module):
         self.seq = hk.Sequential([
                 hk.Linear(hidden_dim, w_init=w_init1, b_init=b_init1), relu,
                 hk.Linear(hidden_dim, w_init=w_init1, b_init=b_init1), relu,
+                hk.Linear(hidden_dim, w_init=w_init1, b_init=b_init1), relu,
                 hk.Linear(1)
             ])
 
     def __call__(self, x):
-        return self.seq(x)
+        inp = x.reshape(x.shape[0], 2*14*14)
+        return self.seq(inp)
 
 
 # @jit
@@ -50,7 +52,7 @@ key = jax.random.PRNGKey(6)
 
 @jit
 def mean_nll(logits, y):
-    return sigmoid_binary_cross_entropy(logits, y)
+    return jnp.mean(sigmoid_binary_cross_entropy(logits, y))
 
 
 @jit
@@ -164,30 +166,32 @@ if __name__ == "__main__":
 
         pretty_print('step', 'train nll', 'train acc', 'train penalty', 'test acc')
 
+        @jit
         def loss_fn(params, envs):
             def aggregator(c, x):
                 env_images = jnp.array(c['env_images'])[x]
                 env_labels = jnp.array(c['env_labels'])[x]
-                actual_samples = c['env_scale'][x]
-                env_images = env_images[:actual_samples]
-                env_labels = env_labels[:actual_samples]
+                # actual_samples = c['env_scale'][x]
+                # env_images = env_images[:actual_samples]
+                # env_labels = env_labels[:actual_samples]
                 logits = apply(params, env_images)
                 carry = {
                     'nll': c['nll'].at[x].set(mean_nll(logits, env_labels)),
                     'acc': c['acc'].at[x].set(mean_accuracy(logits, env_labels)),
                     'penalty': c['penalty'].at[x].set(penalty(logits, env_labels)),
-                    'envs': envs
+                    'env_images': c['env_images'],
+                    'env_labels': c['env_labels']
                 }
 
                 return carry, x
 
             losses, _ = jax.lax.scan(aggregator, {
-                'nll': jnp.zeros(3),
-                'acc': jnp.zeros(3),
-                'penalty': jnp.zeros(3),
+                'nll': jnp.zeros(len(envs)),
+                'acc': jnp.zeros(len(envs)),
+                'penalty': jnp.zeros(len(envs)),
                 'env_images': [x['images'] for x in envs],
                 'env_labels': [x['labels'] for x in envs]
-            }, jnp.arange(3))
+            }, jnp.arange(len(envs)))
 
             train_nll = jnp.mean(losses['nll'])
             train_acc = jnp.mean(losses['acc'])
@@ -202,7 +206,7 @@ if __name__ == "__main__":
             )
 
             loss += penalty_weight * train_penalty
-            if penalty > 1.0:
+            if penalty_weight > 1.0:
                 loss /= penalty_weight
 
             return (loss, (losses, train_nll, train_acc, train_penalty))
@@ -218,9 +222,9 @@ if __name__ == "__main__":
             params = optax.apply_updates(params, updates)
 
             if step % 100 == 0:
-                _, values, _, test_acc, _ = loss_fn(params, envs[-1:])
+                _, (values, _, test_acc, _) = loss_fn(params, envs[-1:])
 
-                test_acc = values['acc'][0]
+                # test_acc = values['acc'][0]
                 pretty_print(
                     np.int32(step),
                     train_nll,
