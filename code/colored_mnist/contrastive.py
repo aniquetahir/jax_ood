@@ -21,6 +21,24 @@ penalty_weight = 91257.18613115903 #@param {type:"number"}
 steps = 501 #@param {type:"integer"}
 grayscale_model = False #@param ["True", "False"] {type:"raw"
 
+
+class MLP_FTS(hk.Module):
+    def __init__(self, name=None):
+        super().__init__(name=name)
+        w_init1 = hk.initializers.RandomUniform(minval=-1)
+        b_init1 = hk.initializers.Constant(0.)
+        self.seq = hk.Sequential([
+                hk.Linear(hidden_dim, w_init=w_init1, b_init=b_init1), relu,
+                hk.Linear(hidden_dim, w_init=w_init1, b_init=b_init1), relu,
+                hk.Linear(hidden_dim, w_init=w_init1, b_init=b_init1), relu,
+        ])
+
+    def __call__(self, x):
+        inp = x.reshape(x.shape[0], 2*14*14)
+        return self.seq(inp)
+
+
+
 class MLP(hk.Module):
     def __init__(self, name=None):
         super().__init__(name=name)
@@ -76,6 +94,19 @@ def pretty_print(*values):
         return v.ljust(col_width)
     str_values = [format_val(v) for v in values]
     print("   ".join(str_values))
+
+
+def create_triplets(num_samples, envs, sim_fn):
+    num_envs = len(envs)
+    num_samples = envs[0]['labels'].shape[0]
+    choice_triplet_envs = np.random.choice(np.arange(num_envs), 3)
+    t1 = np.random.choice(np.arange(num_samples), num_samples, replace=False)
+    # num_same_t2, num_diff_t2
+    # get number of elements with same label and diff label for filtering out data from env2
+    # num_env3_same = num_samples - num_same_t2, num_env3_diff = num_samples - num_diff_t2
+    # interleave env2 and env3 data
+    # return triplet_dataset
+    pass
 
 
 if __name__ == "__main__":
