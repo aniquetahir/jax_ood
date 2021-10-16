@@ -100,24 +100,40 @@ def create_triplets(num_samples, envs, sim_fn):
     num_envs = len(envs)
     num_samples = envs[0]['labels'].shape[0]
     choice_triplet_envs = np.random.choice(np.arange(num_envs), 3)
+    sample_range = np.arange(num_samples)
     t1 = np.random.choice(np.arange(num_samples), num_samples, replace=False)
+    choice_labels = envs[choice_triplet_envs[0]]['labels'][t1]
+    # Select secondlet
+    t2_indices = []
+    while len(t2_indices) < num_samples:
+        sec_index = np.random.choice(sample_range)
+        if envs[choice_triplet_envs[1]]['labels'][sec_index] == choice_labels[len(t2_indices)]:
+            t2_indices.append(sec_index)
+
+    t3_indices = []
+    while len(t3_indices) < num_samples:
+        ter_index = np.random.choice(sample_range)
+        if envs[choice_triplet_envs[2]]['labels'][ter_index] != choice_labels[len(t3_indices)]
+            t3_indices.append(ter_index)
+
     # num_same_t2, num_diff_t2
-    # get number of elements with same label and diff label for filtering out data from env2
-    # num_env3_same = num_samples - num_same_t2, num_env3_diff = num_samples - num_diff_t2
-    # interleave env2 and env3 data
-    # return triplet_dataset
-    pass
+    image_triplets = np.array([envs[choice_triplet_envs[0]]['images'][t1],
+                               envs[choice_triplet_envs[1]]['images'][t2_indices],
+                               envs[choice_triplet_envs[2]]['images'][t3_indices]])
+
+    label_triplets = np.array([envs[choice_triplet_envs[0]]['labels'][t1],
+                               envs[choice_triplet_envs[1]]['labels'][t2_indices],
+                               envs[choice_triplet_envs[2]]['labels'][t3_indices]])
+
+    return image_triplets, label_triplets, choice_triplet_envs
 
 
 if __name__ == "__main__":
     # params = init(split, envs)
     # optim = adam(lr)
     # opt_state = optim.init(params)
-
-
     for restart in range(n_restarts):
         print("Restart", restart)
-
         mnist = datasets.MNIST('datasets/mnist', train=True, download=True)
         mnist_train = (mnist.data[:50000], mnist.targets[:50000])
         mnist_val = (mnist.data[50000:], mnist.targets[50000:])
