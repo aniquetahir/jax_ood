@@ -3,7 +3,7 @@ import random
 import haiku as hk
 from jax.nn import relu
 import jax
-from jax import jit
+from jax import jit, vmap
 import jax.numpy as jnp
 import numpy as np
 from optax import adam, sigmoid_binary_cross_entropy
@@ -24,13 +24,16 @@ steps = 501 #@param {type:"integer"}
 grayscale_model = False #@param ["True", "False"] {type:"raw"
 
 contrastive_tau = 1.0
+triplet_loss_weight = 1.
+num_triplets = 1000
+
 
 
 def cosine_similarity(a, b):
     sim = (jnp.dot(a, b))/(jnp.linalg.norm(a) * jnp.linalg.norm(b))
     return sim
 
-
+@vmap
 def similarity_fn(a, b):
     return cosine_similarity(a, b)
 
@@ -69,15 +72,24 @@ class MLP(hk.Module):
         inp = x.reshape(x.shape[0], 2*14*14)
         return self.seq(inp)
 
+def mlp_params_to_fts(params):
+    tmp = hk.data_structures.to_mutable_dict(params)
+    new_params = {}
+    for i, v in tmp.items():
+        new_params[i.replace('mlp', 'mlp_fts')] = v
+    return hk.data_structures.to_immutable_dict(new_params)
+
 
 # @jit
 def mlp_fn(x):
-    mlp = MLP()
+    mlp = MLP(name='simplenn')
     return mlp(x)
 
+
 def mlp_fts_fn(x):
-    mlp = MLP_FTS()
+    mlp = MLP_FTS(name='simplenn')
     return mlp(x)
+
 
 init, apply = hk.without_apply_rng(hk.transform(mlp_fn))
 _, apply_fts = hk.without_apply_rng(hk.transform(mlp_fts_fn))
@@ -150,6 +162,7 @@ def loss_fn(params, envs):
 
 
 def triplet_loss(params, triplet_images, triplet_labels):
+    # mlp_params_to_fts(params)
     # num_envs = labels.shape[0]
     t1_preds = apply_fts(params, triplet_images[0])
     t2_preds = apply_fts(params, triplet_images[1])
@@ -159,7 +172,16 @@ def triplet_loss(params, triplet_images, triplet_labels):
     denonminator = jnp.exp(similarity_fn(t1_preds, t3_preds)/contrastive_tau)
 
     loss = -jnp.log(numerator/denonminator)
-    return loss
+    return jnp.mean(loss)
+
+
+#@jit
+def ultimate_loss(params, envs, triplet_images):
+    irm_loss, (losses, train_nll, train_acc, train_penalty) = loss_fn(params, envs)
+    t_loss = triplet_loss(params, triplet_images, None)
+    ult_loss = irm_loss + triplet_loss_weight * t_loss
+    return ult_loss, (losses, train_nll, train_acc, train_penalty)
+
 
 def pretty_print(*values):
     col_width = 13
@@ -277,7 +299,7 @@ if __name__ == "__main__":
             make_environment(key, mnist_val[0], mnist_val[1], 0.9)
         ]
 
-        triplet_images, triplet_labels, triplet_envs = create_triplets(1000, envs, None)   # envs[0]['labels'].shape[0], envs, None)
+        # triplet_images, triplet_labels, triplet_envs = create_triplets(1000, envs, None)   # envs[0]['labels'].shape[0], envs, None)
 
         # input('enter key')
         # Initialize the neural network parameters
@@ -294,15 +316,19 @@ if __name__ == "__main__":
         #     loss, _, _, _, _ = loss_fn(params, envs[:2], envs[-1])
         #     return loss
         for step in range(steps):
-            loss_grad_fn = jax.grad(loss_fn, has_aux=True)
-            grads, (values, train_nll, train_acc, train_penalty) = loss_grad_fn(params, envs[:-1])
+            triplet_images, triplet_labels, triplet_envs = create_triplets(num_triplets, envs, None)   # envs[0]['labels'].shape[0], envs, None)
+            # t_params = mlp_params_to_fts(params)
+            # t_loss = triplet_loss(params, triplet_images, None)
+            # t_loss = p_triplet_loss(params, triplet_images)
+            # loss_grad_fn = jax.grad(loss_fn, has_aux=True)
+            loss_grad_fn = jax.grad(ultimate_loss, has_aux=True)
+            grads, (values, train_nll, train_acc, train_penalty) = loss_grad_fn(params, envs[:-1], triplet_images)
 
             updates, opt_state = optim.update(grads, opt_state, params)
             params = optax.apply_updates(params, updates)
 
             if step % 100 == 0:
                 _, (values, _, test_acc, _) = loss_fn(params, envs[-1:])
-
                 # test_acc = values['acc'][0]
                 pretty_print(
                     np.int32(step),
