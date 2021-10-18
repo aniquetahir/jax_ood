@@ -1,3 +1,5 @@
+import random
+
 import haiku as hk
 from jax.nn import relu
 import jax
@@ -20,6 +22,17 @@ penalty_anneal_iters = 190 #@param {type:"integer"}
 penalty_weight = 91257.18613115903 #@param {type:"number"}
 steps = 501 #@param {type:"integer"}
 grayscale_model = False #@param ["True", "False"] {type:"raw"
+
+contrastive_tau = 1.0
+
+
+def cosine_similarity(a, b):
+    sim = (jnp.dot(a, b))/(jnp.linalg.norm(a) * jnp.linalg.norm(b))
+    return sim
+
+
+def similarity_fn(a, b):
+    return cosine_similarity(a, b)
 
 
 class MLP_FTS(hk.Module):
@@ -62,8 +75,13 @@ def mlp_fn(x):
     mlp = MLP()
     return mlp(x)
 
+def mlp_fts_fn(x):
+    mlp = MLP_FTS()
+    return mlp(x)
 
 init, apply = hk.without_apply_rng(hk.transform(mlp_fn))
+_, apply_fts = hk.without_apply_rng(hk.transform(mlp_fts_fn))
+
 key = jax.random.PRNGKey(6)
 # key, split = jax.random.split(key)
 
@@ -85,6 +103,63 @@ def penalty(logits, y):
     grad = nll_grad(logits, y)
     return jnp.sum(grad**2)
 
+@jit
+def loss_fn(params, envs):
+    def aggregator(c, x):
+        env_images = jnp.array(c['env_images'])[x]
+        env_labels = jnp.array(c['env_labels'])[x]
+        # actual_samples = c['env_scale'][x]
+        # env_images = env_images[:actual_samples]
+        # env_labels = env_labels[:actual_samples]
+        logits = apply(params, env_images)
+        carry = {
+            'nll': c['nll'].at[x].set(mean_nll(logits, env_labels)),
+            'acc': c['acc'].at[x].set(mean_accuracy(logits, env_labels)),
+            'penalty': c['penalty'].at[x].set(penalty(logits, env_labels)),
+            'env_images': c['env_images'],
+            'env_labels': c['env_labels']
+        }
+
+        return carry, x
+
+    losses, _ = jax.lax.scan(aggregator, {
+        'nll': jnp.zeros(len(envs)),
+        'acc': jnp.zeros(len(envs)),
+        'penalty': jnp.zeros(len(envs)),
+        'env_images': [x['images'] for x in envs],
+        'env_labels': [x['labels'] for x in envs]
+    }, jnp.arange(len(envs)))
+
+    train_nll = jnp.mean(losses['nll'])
+    train_acc = jnp.mean(losses['acc'])
+    train_penalty = jnp.mean(losses['penalty'])
+
+    weight_norm = jnp.sum(jnp.stack([jnp.linalg.norm(x['w'])**2 for x in params.values()]))
+    loss = train_nll
+    loss += l2_regularizer_weight * weight_norm
+
+    penalty_weight = (
+        penalty_weight if step >= penalty_anneal_iters else 1.0
+    )
+
+    loss += penalty_weight * train_penalty
+    if penalty_weight > 1.0:
+        loss /= penalty_weight
+
+    return (loss, (losses, train_nll, train_acc, train_penalty))
+
+
+def triplet_loss(params, triplet_images, triplet_labels):
+    # num_envs = labels.shape[0]
+    t1_preds = apply_fts(params, triplet_images[0])
+    t2_preds = apply_fts(params, triplet_images[1])
+    t3_preds = apply_fts(params, triplet_images[2])
+
+    numerator = jnp.exp(similarity_fn(t1_preds, t2_preds)/contrastive_tau)
+    denonminator = jnp.exp(similarity_fn(t1_preds, t3_preds)/contrastive_tau)
+
+    loss = -jnp.log(numerator/denonminator)
+    return loss
 
 def pretty_print(*values):
     col_width = 13
@@ -95,35 +170,55 @@ def pretty_print(*values):
     str_values = [format_val(v) for v in values]
     print("   ".join(str_values))
 
+from collections import defaultdict
 
 def create_triplets(num_samples, envs, sim_fn):
     num_envs = len(envs)
-    num_samples = envs[0]['labels'].shape[0]
+    num_source = envs[0]['labels'].shape[0]
     choice_triplet_envs = np.random.choice(np.arange(num_envs), 3)
     sample_range = np.arange(num_samples)
-    t1 = np.random.choice(np.arange(num_samples), num_samples, replace=False)
+    t1 = np.random.choice(np.arange(num_source), num_samples, replace=False)
     choice_labels = envs[choice_triplet_envs[0]]['labels'][t1]
+
     # Select secondlet
     t2_indices = []
+    t2_env = envs[choice_triplet_envs[1]]
+    t2_label_mapping = defaultdict(list)
+    for i, label in enumerate(t2_env['labels'].tolist()):
+        t2_label_mapping[tuple(label)].append(i)
+
     while len(t2_indices) < num_samples:
-        sec_index = np.random.choice(sample_range)
-        if envs[choice_triplet_envs[1]]['labels'][sec_index] == choice_labels[len(t2_indices)]:
-            t2_indices.append(sec_index)
+        choice_label = tuple(choice_labels[len(t2_indices)])
+        sec_index = np.random.choice(t2_label_mapping[choice_label])
+        t2_indices.append(sec_index)
+        # sec_index = np.random.choice(sample_range)
+        # if envs[choice_triplet_envs[1]]['labels'][sec_index] == choice_labels[len(t2_indices)]:
+        #     t2_indices.append(sec_index)
 
     t3_indices = []
+    t3_env = envs[choice_triplet_envs[2]]
+    t3_label_mapping = defaultdict(list)
+    for i, label in enumerate(t3_env['labels'].tolist()):
+        t3_label_mapping[tuple(label)].append(i)
+
     while len(t3_indices) < num_samples:
-        ter_index = np.random.choice(sample_range)
-        if envs[choice_triplet_envs[2]]['labels'][ter_index] != choice_labels[len(t3_indices)]
-            t3_indices.append(ter_index)
+        choice_label = tuple(choice_labels[len(t3_indices)])
+        other_labels = [x for x in t3_label_mapping.keys() if x != choice_label]
+        other_label = random.choice(other_labels)
+        t3_indices.append(np.random.choice(t3_label_mapping[other_label]))
+
+        # ter_index = np.random.choice(sample_range)
+        # if envs[choice_triplet_envs[2]]['labels'][ter_index] != choice_labels[len(t3_indices)]:
+        #     t3_indices.append(ter_index)
 
     # num_same_t2, num_diff_t2
     image_triplets = np.array([envs[choice_triplet_envs[0]]['images'][t1],
-                               envs[choice_triplet_envs[1]]['images'][t2_indices],
-                               envs[choice_triplet_envs[2]]['images'][t3_indices]])
+                               envs[choice_triplet_envs[1]]['images'][np.array(t2_indices)],
+                               envs[choice_triplet_envs[2]]['images'][np.array(t3_indices)]])
 
     label_triplets = np.array([envs[choice_triplet_envs[0]]['labels'][t1],
-                               envs[choice_triplet_envs[1]]['labels'][t2_indices],
-                               envs[choice_triplet_envs[2]]['labels'][t3_indices]])
+                               envs[choice_triplet_envs[1]]['labels'][np.array(t2_indices)],
+                               envs[choice_triplet_envs[2]]['labels'][np.array(t3_indices)]])
 
     return image_triplets, label_triplets, choice_triplet_envs
 
@@ -182,6 +277,9 @@ if __name__ == "__main__":
             make_environment(key, mnist_val[0], mnist_val[1], 0.9)
         ]
 
+        triplet_images, triplet_labels, triplet_envs = create_triplets(1000, envs, None)   # envs[0]['labels'].shape[0], envs, None)
+
+        # input('enter key')
         # Initialize the neural network parameters
         key, split = jax.random.split(key)
         params = init(split, envs[0]['images'][:10])
@@ -191,50 +289,6 @@ if __name__ == "__main__":
 
         pretty_print('step', 'train nll', 'train acc', 'train penalty', 'test acc')
 
-        @jit
-        def loss_fn(params, envs):
-            def aggregator(c, x):
-                env_images = jnp.array(c['env_images'])[x]
-                env_labels = jnp.array(c['env_labels'])[x]
-                # actual_samples = c['env_scale'][x]
-                # env_images = env_images[:actual_samples]
-                # env_labels = env_labels[:actual_samples]
-                logits = apply(params, env_images)
-                carry = {
-                    'nll': c['nll'].at[x].set(mean_nll(logits, env_labels)),
-                    'acc': c['acc'].at[x].set(mean_accuracy(logits, env_labels)),
-                    'penalty': c['penalty'].at[x].set(penalty(logits, env_labels)),
-                    'env_images': c['env_images'],
-                    'env_labels': c['env_labels']
-                }
-
-                return carry, x
-
-            losses, _ = jax.lax.scan(aggregator, {
-                'nll': jnp.zeros(len(envs)),
-                'acc': jnp.zeros(len(envs)),
-                'penalty': jnp.zeros(len(envs)),
-                'env_images': [x['images'] for x in envs],
-                'env_labels': [x['labels'] for x in envs]
-            }, jnp.arange(len(envs)))
-
-            train_nll = jnp.mean(losses['nll'])
-            train_acc = jnp.mean(losses['acc'])
-            train_penalty = jnp.mean(losses['penalty'])
-
-            weight_norm = jnp.sum(jnp.stack([jnp.linalg.norm(x['w'])**2 for x in params.values()]))
-            loss = train_nll
-            loss += l2_regularizer_weight * weight_norm
-
-            penalty_weight = (
-                penalty_weight if step >= penalty_anneal_iters else 1.0
-            )
-
-            loss += penalty_weight * train_penalty
-            if penalty_weight > 1.0:
-                loss /= penalty_weight
-
-            return (loss, (losses, train_nll, train_acc, train_penalty))
 
         # def loss_fn_for_grad(params, envs):
         #     loss, _, _, _, _ = loss_fn(params, envs[:2], envs[-1])
