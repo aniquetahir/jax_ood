@@ -15,14 +15,15 @@ def scl_denominator(zi, za, mask):
     vec_scl_exp = jax.vmap(scl_numerator, in_axes=(None, 0))
     denom = vec_scl_exp(zi, za) * mask
     denom = jnp.sum(denom)
+    return denom
 
 
-def scl_inner(zi, z_all, zp_mask, embeddings, except_mask):
-    numerator = scl_numerator(zi, zp) * zp_mask * except_mask
-    flattened_embeddings = embeddings
-    num_embeddings = flattened_embeddings.shape[0]
+def scl_inner(zi, zp, zp_mask, embeddings, except_mask):
+    numerator = scl_numerator(zi, zp) * zp_mask
+    # flattened_embeddings = embeddings
+    # num_embeddings = flattened_embeddings.shape[0]
     # zi_matrix = zi * np.ones((num_embeddings, 1))
-    denominator = scl_denominator(zi, flattened_embeddings, except_mask)
+    denominator = scl_denominator(zi, embeddings, except_mask)
     return jnp.sum(jnp.log(numerator/denominator))
 
 
@@ -47,14 +48,18 @@ def sup_contrastive_loss_i(zi_index, zi_label, embeddings, labels):
     zi = embeddings[zi_index]
     z_all = embeddings
     zp_mask = label_masks
-    vec_scl_inner = jax.vmap(scl_inner)
+    vec_scl_inner = jax.vmap(scl_inner, in_axes=(None, 0, 0, None, None))
     inner_loss = vec_scl_inner(zi, z_all, zp_mask, embeddings, except_mask)
     return (-1./num_sim) * inner_loss
 
 
-def sup_contrastive_loss(params, env_images, env_labels):
+def get_sup_contrastive_loss_fn(mlp_fts):
+    return partial(sup_contrastive_loss, mlp_fts=mlp_fts)
+
+def sup_contrastive_loss(params, env_images, env_labels, mlp_fts):
     # get_embeddings
     embeddings = jnp.vstack(env_images)
+    embeddings = mlp_fts(params, embeddings)
     labels = jnp.vstack(env_labels)
 
     # vectorize z_i
