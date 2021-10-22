@@ -50,7 +50,7 @@ def sup_contrastive_loss_i(zi_index, zi_label, embeddings, labels):
     zp_mask = label_masks
     vec_scl_inner = jax.vmap(scl_inner, in_axes=(None, 0, 0, None, None))
     inner_loss = vec_scl_inner(zi, z_all, zp_mask, embeddings, except_mask)
-    return (-1./num_sim) * inner_loss
+    return (-1./num_sim) * jnp.sum(inner_loss)
 
 
 def get_sup_contrastive_loss_fn(mlp_fts):
@@ -68,3 +68,5 @@ def sup_contrastive_loss(params, env_images, env_labels, mlp_fts):
 
     # sum over loss
     loss = loss_outer(zi_indices, labels, embeddings, labels)
+    return jnp.sum(loss)
+

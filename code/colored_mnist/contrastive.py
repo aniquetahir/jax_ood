@@ -5,10 +5,14 @@ from jax.nn import relu
 import jax
 from jax import jit, vmap
 import jax.numpy as jnp
+from jax.config import config
 import numpy as np
 from optax import adam, sigmoid_binary_cross_entropy
 import optax
 from torchvision import datasets
+
+config.update('jax_enable_x64', True)
+
 f32 = jnp.float32
 f64 = jnp.float64
 i64 = jnp.int64
@@ -307,8 +311,6 @@ if __name__ == "__main__":
         params = init(split, envs[0]['images'][:10])
         optim = optax.adam(lr)
         opt_state = optim.init(params)
-
-
         pretty_print('step', 'train nll', 'train acc', 'train penalty', 'test acc')
 
 
