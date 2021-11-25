@@ -119,7 +119,7 @@ if __name__ == "__main__":
             images = jnp.stack([images, images], axis=1)
 
             zeros_set = images[jnp.array(range(len(images))), jnp.array((1-colors), dtype=i64), :, :] * 0
-            images.at[jnp.array(range(len(images))), jnp.array((1-colors), dtype=i64), :, :].set(zeros_set)
+            images = images.at[jnp.array(range(len(images))), jnp.array((1-colors), dtype=i64), :, :].set(zeros_set)
             # images[jnp.array(range(len(images))), jnp.array((1-colors), dtype=i64), :, :]*= 0
             return {
                 'images': (images.astype(float)/255.),
